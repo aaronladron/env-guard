@@ -24,6 +24,8 @@ func TestRun(t *testing.T) {
 		{"help command", []string{"help"}, 0, "Usage:", ""},
 		{"scan help", []string{"scan", "--help"}, 0, "--exclude", ""},
 		{"scan short help", []string{"scan", "-h"}, 0, "Usage: env-guard scan", ""},
+		{"init help", []string{"init", "--help"}, 0, "--wrap", ""},
+		{"conflicting init options", []string{"init", "--wrap", "--remove"}, 2, "", "unsupported command"},
 		{"unknown command", []string{"unknown"}, 2, "", "unsupported command"},
 		{"unknown flag", []string{"--unknown"}, 2, "", "unsupported command"},
 		{"duplicate staged option", []string{"scan", "--staged", "--staged"}, 2, "", "unsupported command"},
@@ -48,6 +50,83 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInitCommand(t *testing.T) {
+	executable, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+
+	t.Run("install is idempotent and removable", func(t *testing.T) {
+		directory := initRepository(t, executable)
+		t.Chdir(directory)
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"init"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		path := filepath.Join(directory, ".git", "hooks", "pre-commit")
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(data), "env-guard scan --staged") {
+			t.Fatalf("hook = %q, error = %v", data, err)
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"init"}, &stdout, &stderr); code != ExitOK || !strings.Contains(stdout.String(), "already installed") {
+			t.Fatalf("exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"init", "--remove"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("hook still exists: %v", err)
+		}
+	})
+
+	t.Run("existing hook requires wrap and is restored", func(t *testing.T) {
+		directory := initRepository(t, executable)
+		t.Chdir(directory)
+		path := filepath.Join(directory, ".git", "hooks", "pre-commit")
+		original := "#!/bin/sh\necho existing\n"
+		if err := os.WriteFile(path, []byte(original), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"init"}, &stdout, &stderr); code != ExitUsage || !strings.Contains(stderr.String(), "--wrap") {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		if string(data) != original {
+			t.Fatal("existing hook changed after refused install")
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"init", "--wrap"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"init", "--remove"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		data, err = os.ReadFile(path)
+		if err != nil || string(data) != original {
+			t.Fatalf("restored hook = %q, error = %v", data, err)
+		}
+	})
+}
+
+func initRepository(t *testing.T, executable string) string {
+	t.Helper()
+	directory := t.TempDir()
+	command := exec.Command(executable, "init", "--quiet")
+	command.Dir = directory
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	return directory
 }
 
 func TestScanCommand(t *testing.T) {

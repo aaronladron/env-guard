@@ -102,6 +102,29 @@ func TestOpenWithoutGit(t *testing.T) {
 	}
 }
 
+func TestPreCommitHookPathHonorsGitConfiguration(t *testing.T) {
+	executable, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	directory := t.TempDir()
+	runGit(t, executable, directory, "init", "--quiet")
+	runGit(t, executable, directory, "config", "core.hooksPath", "custom-hooks")
+	repository := &Repository{executable: executable, directory: directory}
+	got, err := repository.PreCommitHookPath(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedDirectory, "custom-hooks", "pre-commit")
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+}
+
 func TestStagedFailures(t *testing.T) {
 	executable, err := exec.LookPath("git")
 	if err != nil {
