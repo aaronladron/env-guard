@@ -9,8 +9,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aaronladron/env-guard/internal/config"
 	gitrepo "github.com/aaronladron/env-guard/internal/git"
 	"github.com/aaronladron/env-guard/internal/hook"
+	"github.com/aaronladron/env-guard/internal/output"
 	"github.com/aaronladron/env-guard/internal/scanner"
 )
 
@@ -25,7 +27,7 @@ const help = `env-guard — detect potential secrets before committing to Git
 
 Usage:
   env-guard --help
-  env-guard scan [--staged] [--exclude MOTIF]
+  env-guard scan [--staged] [--json] [--exclude MOTIF]
   env-guard init [--wrap | --remove]
   env-guard scan --help
 
@@ -43,12 +45,13 @@ Options:
   --remove    Remove env-guard and restore a preserved hook
 `
 
-const scanHelp = `Usage: env-guard scan [--staged] [--exclude MOTIF]
+const scanHelp = `Usage: env-guard scan [--staged] [--json] [--exclude MOTIF]
 
 Scan the current project for potential secrets.
 
 Options:
   --staged          Scan only the content staged in Git
+  --json            Write the stable JSON format
   --exclude MOTIF    Exclude a name or relative path (repeatable)
 `
 
@@ -154,13 +157,29 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return usage(stderr)
 	}
-	detector, err := scanner.NewDetector(scanner.DefaultRules())
+	configuration, _, err := config.Load(config.DefaultPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error: invalid .env-guard.yaml configuration.")
+		return ExitInternal
+	}
+	rules, ok := configuredRules(scanner.DefaultRules(), configuration.IgnoreRules)
+	if !ok {
+		fmt.Fprintln(stderr, "Error: invalid .env-guard.yaml configuration.")
+		return ExitInternal
+	}
+	detector, err := scanner.NewDetector(rules)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error: unable to initialize detection rules.")
 		return ExitInternal
 	}
 	ctx := context.Background()
-	scanOptions := scanner.Options{Exclude: options.excludes}
+	scanOptions := scanner.Options{
+		Exclude:   append(append([]string{}, configuration.Exclude...), options.excludes...),
+		Allowlist: make([]scanner.AllowEntry, 0, len(configuration.Allowlist)),
+	}
+	for _, entry := range configuration.Allowlist {
+		scanOptions.Allowlist = append(scanOptions.Allowlist, scanner.AllowEntry{Path: entry.Path, Line: entry.Line, RuleID: entry.Rule})
+	}
 	var report scanner.Report
 	if options.staged {
 		repository, gitErr := gitrepo.Open(".")
@@ -198,33 +217,52 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Error: scan failed.")
 		return ExitInternal
 	}
-	if _, err := fmt.Fprintf(stdout, "env-guard\n\n%d files scanned\n", report.FilesScanned); err != nil {
+	minimum, ok := scanner.ParseSeverity(configuration.Severity)
+	if !ok {
+		fmt.Fprintln(stderr, "Error: invalid .env-guard.yaml configuration.")
+		return ExitInternal
+	}
+	report = scanner.FilterSeverity(report, minimum)
+	if options.json || configuration.Output == "json" {
+		err = output.JSON(stdout, report)
+	} else {
+		err = output.Human(stdout, report)
+	}
+	if err != nil {
 		fmt.Fprintln(stderr, "Error: unable to write output.")
 		return ExitInternal
 	}
-	if len(report.Findings) == 0 {
-		if _, err := fmt.Fprintln(stdout, "No potential secrets detected."); err != nil {
-			fmt.Fprintln(stderr, "Error: unable to write output.")
-			return ExitInternal
+	if len(report.Findings) > 0 {
+		return ExitFindings
+	}
+	return ExitOK
+}
+
+func configuredRules(rules []scanner.Rule, ignored []string) ([]scanner.Rule, bool) {
+	known := make(map[string]bool, len(rules))
+	for _, rule := range rules {
+		known[rule.ID] = true
+	}
+	disabled := make(map[string]bool, len(ignored))
+	for _, id := range ignored {
+		if !known[id] {
+			return nil, false
 		}
-		return ExitOK
+		disabled[id] = true
 	}
-	if _, err := fmt.Fprintf(stdout, "\n%d potential secrets detected\n", len(report.Findings)); err != nil {
-		fmt.Fprintln(stderr, "Error: unable to write output.")
-		return ExitInternal
-	}
-	for _, finding := range report.Findings {
-		if _, err := fmt.Fprintf(stdout, "\n%s  %s\n    %s:%d\n    Value: %s\n", finding.Severity, finding.Type, finding.File, finding.Line, finding.MaskedValue); err != nil {
-			fmt.Fprintln(stderr, "Error: unable to write output.")
-			return ExitInternal
+	configured := make([]scanner.Rule, 0, len(rules)-len(disabled))
+	for _, rule := range rules {
+		if !disabled[rule.ID] {
+			configured = append(configured, rule)
 		}
 	}
-	return ExitFindings
+	return configured, len(configured) > 0
 }
 
 type parsedScanOptions struct {
 	excludes []string
 	staged   bool
+	json     bool
 }
 
 func scanArgs(args []string) (parsedScanOptions, bool) {
@@ -236,6 +274,11 @@ func scanArgs(args []string) (parsedScanOptions, bool) {
 				return parsedScanOptions{}, false
 			}
 			options.staged = true
+		case args[i] == "--json":
+			if options.json {
+				return parsedScanOptions{}, false
+			}
+			options.json = true
 		case args[i] == "--exclude":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				return parsedScanOptions{}, false
