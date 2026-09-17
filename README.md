@@ -3,14 +3,14 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 6.** La commande `scan` parcourt le dossier
+**État du développement : étape 7.** La commande `scan` parcourt le dossier
 courant ou uniquement le contenu staged dans Git. `init` gère le hook pre-commit.
-La configuration et le format JSON restent à venir.
+La configuration YAML et les sorties humaine et JSON sont disponibles.
 
 ## Compiler et exécuter
 
-Go 1.27 ou une version ultérieure est requis. Le projet utilise uniquement la
-bibliothèque standard, sans dépendance Go externe.
+Go 1.27 ou une version ultérieure est requis. La seule dépendance externe est
+`go.yaml.in/yaml/v3`, utilisée pour parser YAML strictement et correctement.
 
 ```sh
 go build -o bin/env-guard ./cmd/env-guard
@@ -39,6 +39,13 @@ env-guard scan --staged
 Ce mode lit les blobs présents dans l’index Git. Une modification non staged du
 même fichier ne change donc pas le résultat. Les fichiers non suivis et les
 suppressions staged ne sont pas analysés.
+
+Produire une sortie JSON :
+
+```sh
+env-guard scan --json
+env-guard scan --staged --json
+```
 
 ## Hook pre-commit
 
@@ -78,8 +85,10 @@ sauvegarde, avec son contenu et ses permissions d’origine. La commande respect
 ```text
 cmd/env-guard/main.go           Point d’entrée et code de sortie du processus
 internal/cli/                  Arguments, aide et sorties du CLI
+internal/config/               Chargement strict de .env-guard.yaml
 internal/git/                  Lecture sûre des fichiers présents dans l’index
 internal/hook/                 Installation et retrait du hook pre-commit
+internal/output/               Sorties humaine et JSON
 internal/scanner/
   scanner.go                   Lecture bornée du flux et annulation
   files.go                     Parcours, exclusions et fichiers binaires
@@ -107,6 +116,69 @@ résout les objets de l’index par leur identifiant. Les noms sont lus avec un
 séparateur nul : les espaces, tabulations et sauts de ligne dans un chemin ne
 modifient pas le découpage. Les messages d’erreur de Git ne sont pas recopiés
 dans la sortie afin d’éviter d’y propager du contenu sensible.
+
+## Configuration
+
+env-guard charge automatiquement `.env-guard.yaml` depuis le dossier courant.
+L’absence du fichier utilise les valeurs par défaut. Les champs inconnus, les
+règles inexistantes et les documents YAML multiples font échouer le scan.
+
+```yaml
+exclude:
+  - generated
+  - "fixtures/*.txt"
+
+ignore_rules:
+  - stripe-test-key
+
+allowlist:
+  - path: config/example.txt
+    line: 12
+    rule: aws-access-key-id
+
+severity: medium
+output: human
+```
+
+- `exclude` complète les exclusions par défaut et celles données avec
+  `--exclude` ;
+- `ignore_rules` désactive des identifiants du catalogue existant ;
+- `allowlist` ignore une seule combinaison exacte de chemin, ligne et règle ;
+- `severity` accepte `low`, `medium` ou `high` et vaut `low` par défaut ;
+- `output` accepte `human` ou `json` et vaut `human` par défaut.
+
+`--json` force JSON même si la configuration demande la sortie humaine. Une
+configuration ne peut pas réactiver une sortie humaine demandée explicitement en
+JSON. Le fichier est limité à 1 Mio et ses erreurs restent volontairement
+génériques pour ne pas recopier une valeur sensible dans le terminal.
+
+## Format JSON
+
+Le format porte un numéro de version et utilise toujours un tableau pour
+`findings`, y compris lorsqu’il est vide :
+
+```json
+{
+  "version": 1,
+  "files_scanned": 2,
+  "skipped_entries": 1,
+  "findings": [
+    {
+      "type": "AWS access key ID",
+      "severity": "HIGH",
+      "file": "config.txt",
+      "line": 4,
+      "rule": "aws-access-key-id",
+      "message": "Potential AWS access key ID detected",
+      "value": "[REDACTED]"
+    }
+  ]
+}
+```
+
+La sortie JSON se termine par un saut de ligne. Son code de sortie reste 0, 1,
+2 ou 3 selon le résultat du scan ; le JSON n’est donc pas une indication de
+succès à lui seul.
 
 ## Moteur de détection
 
@@ -245,5 +317,4 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront JSON et la configuration, puis la CI, les
-releases et la documentation complète.
+Les étapes suivantes ajouteront la CI, les releases et la documentation complète.

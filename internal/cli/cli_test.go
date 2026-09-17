@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -29,6 +30,7 @@ func TestRun(t *testing.T) {
 		{"unknown command", []string{"unknown"}, 2, "", "unsupported command"},
 		{"unknown flag", []string{"--unknown"}, 2, "", "unsupported command"},
 		{"duplicate staged option", []string{"scan", "--staged", "--staged"}, 2, "", "unsupported command"},
+		{"duplicate JSON option", []string{"scan", "--json", "--json"}, 2, "", "unsupported command"},
 		{"missing exclusion", []string{"scan", "--exclude"}, 2, "", "unsupported command"},
 		{"invalid exclusion", []string{"scan", "--exclude", "../outside"}, 2, "", "unsupported command"},
 		{"unexpected path", []string{"scan", "some-path"}, 2, "", "unsupported command"},
@@ -50,6 +52,105 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJSONAndConfiguration(t *testing.T) {
+	t.Run("JSON flag", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile("config.txt", []byte("port=8080\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan", "--json"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		var result struct {
+			Version  int   `json:"version"`
+			Findings []any `json:"findings"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Version != 1 || result.Findings == nil {
+			t.Fatalf("JSON = %q, error = %v", stdout.String(), err)
+		}
+	})
+
+	t.Run("ignored rule and JSON output from config", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		value := "AKIA" + strings.Repeat("A", 16)
+		if err := os.WriteFile("config.txt", []byte("key="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		content := "ignore_rules:\n  - aws-access-key-id\noutput: json\n"
+		if err := os.WriteFile(".env-guard.yaml", []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), value) || !strings.Contains(stdout.String(), `"findings": []`) {
+			t.Fatalf("output = %q", stdout.String())
+		}
+	})
+
+	t.Run("severity threshold", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		value := "sk_test_" + strings.Repeat("a", 24)
+		if err := os.WriteFile("config.txt", []byte("key="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(".env-guard.yaml", []byte("severity: high\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitOK || !strings.Contains(stdout.String(), "No potential secrets") {
+			t.Fatalf("exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("allowlist", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		value := "AKIA" + strings.Repeat("A", 16)
+		if err := os.WriteFile("config.txt", []byte("key="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		content := "allowlist:\n  - path: config.txt\n    line: 1\n    rule: aws-access-key-id\n"
+		if err := os.WriteFile(".env-guard.yaml", []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+	})
+
+	t.Run("configuration exclusions", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.Mkdir("generated", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		value := "AKIA" + strings.Repeat("A", 16)
+		if err := os.WriteFile(filepath.Join("generated", "config.txt"), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(".env-guard.yaml", []byte("exclude: [generated]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+	})
+
+	t.Run("unknown rule is rejected", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile(".env-guard.yaml", []byte("ignore_rules: [unknown]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitInternal || !strings.Contains(stderr.String(), "invalid .env-guard.yaml") {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+	})
 }
 
 func TestInitCommand(t *testing.T) {

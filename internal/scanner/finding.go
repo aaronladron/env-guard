@@ -1,5 +1,7 @@
 package scanner
 
+import "strings"
+
 // Severity is the impact assigned to a detection rule.
 type Severity string
 
@@ -19,4 +21,42 @@ type Finding struct {
 	RuleID      string
 	Message     string
 	MaskedValue string
+}
+
+func ParseSeverity(value string) (Severity, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return SeverityLow, true
+	case "medium":
+		return SeverityMedium, true
+	case "high":
+		return SeverityHigh, true
+	default:
+		return "", false
+	}
+}
+
+func FilterSeverity(report Report, minimum Severity) Report {
+	minimumRank := severityRank(minimum)
+	filtered := report
+	filtered.Findings = make([]Finding, 0, len(report.Findings))
+	for _, finding := range report.Findings {
+		if severityRank(finding.Severity) >= minimumRank {
+			filtered.Findings = append(filtered.Findings, finding)
+		}
+	}
+	return filtered
+}
+
+func severityRank(severity Severity) int {
+	switch severity {
+	case SeverityHigh:
+		return 3
+	case SeverityMedium:
+		return 2
+	case SeverityLow:
+		return 1
+	default:
+		return 0
+	}
 }
