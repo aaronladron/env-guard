@@ -1,128 +1,140 @@
 # env-guard
 
-Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
-un projet avant leur commit dans Git.
+[![CI](https://github.com/aaronladron/env-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/aaronladron/env-guard/actions/workflows/ci.yml)
+[![Release](https://github.com/aaronladron/env-guard/actions/workflows/release.yml/badge.svg)](https://github.com/aaronladron/env-guard/actions/workflows/release.yml)
+[![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**État du développement : étape 8.** La commande `scan` parcourt le dossier
-courant ou uniquement le contenu staged dans Git. `init` gère le hook pre-commit.
-La configuration YAML et les sorties humaine et JSON sont disponibles. GitHub
-Actions vérifie le projet et GoReleaser construit les releases multiplateformes.
+`env-guard` détecte les secrets et credentials potentiellement exposés dans un
+projet avant leur commit dans Git. Il fonctionne localement, sans base de
+données, compte utilisateur, API externe ou service cloud.
 
-## Compiler et exécuter
+```console
+$ env-guard scan
+env-guard
 
-Go 1.27 ou une version ultérieure est requis. La seule dépendance externe est
-`go.yaml.in/yaml/v3`, utilisée pour parser YAML strictement et correctement.
+142 files scanned
+
+2 potential secrets detected
+
+HIGH  AWS access key ID
+    config/aws.go:24
+    Value: [REDACTED]
+
+HIGH  GitHub token
+    scripts/release.sh:12
+    Value: [REDACTED]
+```
+
+Les valeurs trouvées ne sont jamais affichées intégralement ni conservées dans
+les résultats.
+
+## Fonctionnalités
+
+- analyse récursive du dossier courant ;
+- analyse du contenu exact de l’index avec `scan --staged` ;
+- règles AWS, GitHub, Stripe, clés privées et affectations génériques ;
+- filtrage des placeholders, de la documentation et des valeurs peu entropiques ;
+- exclusions, allowlist exacte et seuil de sévérité configurables ;
+- fichiers binaires et liens symboliques ignorés ;
+- hook pre-commit idempotent et réversible ;
+- sorties humaine et JSON versionnée ;
+- codes de sortie adaptés aux scripts et à la CI ;
+- binaires macOS, Linux et Windows produits avec GoReleaser.
+
+## Installation
+
+### Releases
+
+Télécharger l’archive correspondant à votre plateforme depuis la page
+[Releases](https://github.com/aaronladron/env-guard/releases), vérifier sa somme
+SHA-256 avec `checksums.txt`, puis placer le binaire dans votre `PATH`.
+
+Les plateformes publiées sont :
+
+| Système | Architectures |
+| --- | --- |
+| macOS | amd64, arm64 |
+| Linux | amd64, arm64 |
+| Windows | amd64 |
+
+### Avec Go
+
+Go 1.27 ou une version ultérieure est requis :
 
 ```sh
-go build -o bin/env-guard ./cmd/env-guard
+go install github.com/aaronladron/env-guard/cmd/env-guard@latest
+```
+
+### Depuis les sources
+
+```sh
+git clone https://github.com/aaronladron/env-guard.git
+cd env-guard
+make build
 ./bin/env-guard --help
-./bin/env-guard scan
 ```
 
-Sous Windows, utiliser `-o bin/env-guard.exe`, puis exécuter ce fichier.
+La seule dépendance directe est
+[`go.yaml.in/yaml/v3`](https://pkg.go.dev/go.yaml.in/yaml/v3), utilisée pour
+charger la configuration YAML avec une validation stricte.
 
-Exclure un nom dans toute l’arborescence ou un chemin relatif :
+## Démarrage rapide
+
+Analyser tout le projet :
 
 ```sh
-env-guard scan --exclude generated --exclude 'fixtures/*.txt'
+env-guard scan
 ```
 
-L’option peut être répétée et accepte aussi la forme `--exclude=generated`.
-Les commandes, options et arguments non pris en charge sont rejetés.
-`--exclude` peut être combiné avec `--staged`.
-
-Analyser uniquement ce qui sera inclus dans le prochain commit :
+Analyser uniquement les fichiers staged :
 
 ```sh
 env-guard scan --staged
 ```
 
-Ce mode lit les blobs présents dans l’index Git. Une modification non staged du
-même fichier ne change donc pas le résultat. Les fichiers non suivis et les
-suppressions staged ne sont pas analysés.
-
-Produire une sortie JSON :
-
-```sh
-env-guard scan --json
-env-guard scan --staged --json
-```
-
-## Hook pre-commit
-
-Installer le hook dans le dépôt courant :
+Installer le hook pre-commit :
 
 ```sh
 env-guard init
 ```
 
-L’installation est idempotente. Le hook lance `env-guard scan --staged` et bloque
-le commit si des secrets potentiels sont détectés, si le scan échoue ou si le
-binaire `env-guard` n’est pas disponible dans le `PATH` du processus Git.
+Le hook exécute `env-guard scan --staged` avant chaque commit. Un secret potentiel
+ou une erreur de scan bloque le commit.
 
-Un hook existant n’est jamais écrasé. La commande s’arrête et propose de le
-conserver explicitement :
+## Commandes
+
+| Commande | Description |
+| --- | --- |
+| `env-guard --help` | Affiche l’aide générale |
+| `env-guard scan` | Analyse le dossier courant |
+| `env-guard scan --staged` | Analyse les blobs présents dans l’index Git |
+| `env-guard scan --json` | Produit le format JSON versionné |
+| `env-guard scan --exclude MOTIF` | Ajoute une exclusion ; option répétable |
+| `env-guard init` | Installe le hook pre-commit |
+| `env-guard init --wrap` | Préserve et enveloppe un hook existant |
+| `env-guard init --remove` | Retire env-guard et restaure l’ancien hook |
+
+`--staged`, `--json` et `--exclude` peuvent être combinés.
+
+### Hook existant
+
+`env-guard init` n’écrase jamais un hook existant. Il s’arrête et indique la
+commande sûre à utiliser :
 
 ```sh
 env-guard init --wrap
 ```
 
-L’ancien hook est déplacé vers `pre-commit.env-guard-backup`. Le nouveau hook
-l’exécute en premier et ne lance env-guard que s’il réussit. Le type de l’ancien
-hook n’a pas d’importance : son shebang d’origine reste utilisé.
-
-Retirer env-guard :
-
-```sh
-env-guard init --remove
-```
-
-Un hook installé seul est supprimé. Un hook enveloppé est remplacé par sa
-sauvegarde, avec son contenu et ses permissions d’origine. La commande respecte
-également `core.hooksPath` lorsque cette option Git est configurée.
-
-## Architecture
-
-```text
-cmd/env-guard/main.go           Point d’entrée et code de sortie du processus
-internal/cli/                  Arguments, aide et sorties du CLI
-internal/config/               Chargement strict de .env-guard.yaml
-internal/git/                  Lecture sûre des fichiers présents dans l’index
-internal/hook/                 Installation et retrait du hook pre-commit
-internal/output/               Sorties humaine et JSON
-internal/scanner/
-  scanner.go                   Lecture bornée du flux et annulation
-  files.go                     Parcours, exclusions et fichiers binaires
-  detector.go                  Validation et exécution des règles injectées
-  filter.go                    Placeholders, documentation et entropie
-  finding.go                   Résultats localisés et niveaux de sévérité
-  patterns.go                  Catalogue des premières règles
-  patterns_test.go             Formats reconnus et fixtures
-  detector_test.go             Règles, masquage et scans concurrents
-  scanner_test.go              Lecture, limites et erreurs
-```
-
-Le point d’entrée délègue au CLI, dont les sorties sont injectées pour permettre
-les tests sans quitter le processus. Le moteur reçoit un `io.Reader` : il est
-indépendant du système de fichiers, de Git et du système d’exploitation. Les
-règles sont fournies séparément au constructeur ; le catalogue fournisseur reste
-séparé de la lecture, du parcours et de la détection.
-
-`ScanFS` travaille avec un `fs.FS`, ce qui garde le parcours testable et portable.
-Le CLI ouvre le dossier courant avec `os.OpenRoot` et ne suit pas les liens
-symboliques rencontrés pendant le parcours.
-
-Le mode staged appelle l’exécutable Git local avec des arguments séparés, puis
-résout les objets de l’index par leur identifiant. Les noms sont lus avec un
-séparateur nul : les espaces, tabulations et sauts de ligne dans un chemin ne
-modifient pas le découpage. Les messages d’erreur de Git ne sont pas recopiés
-dans la sortie afin d’éviter d’y propager du contenu sensible.
+Le hook actuel est déplacé vers `pre-commit.env-guard-backup`. Le wrapper
+l’exécute en premier, puis lance env-guard uniquement s’il réussit.
+`env-guard init --remove` restaure son contenu et ses permissions. La commande
+respecte également `core.hooksPath`.
 
 ## Configuration
 
-env-guard charge automatiquement `.env-guard.yaml` depuis le dossier courant.
-L’absence du fichier utilise les valeurs par défaut. Les champs inconnus, les
-règles inexistantes et les documents YAML multiples font échouer le scan.
+env-guard charge `.env-guard.yaml` depuis le dossier courant. Tous les champs
+sont optionnels :
 
 ```yaml
 exclude:
@@ -141,22 +153,76 @@ severity: medium
 output: human
 ```
 
-- `exclude` complète les exclusions par défaut et celles données avec
-  `--exclude` ;
-- `ignore_rules` désactive des identifiants du catalogue existant ;
-- `allowlist` ignore une seule combinaison exacte de chemin, ligne et règle ;
-- `severity` accepte `low`, `medium` ou `high` et vaut `low` par défaut ;
-- `output` accepte `human` ou `json` et vaut `human` par défaut.
+| Champ | Valeurs | Par défaut |
+| --- | --- | --- |
+| `exclude` | Noms ou chemins relatifs avec jokers simples | Liste vide |
+| `ignore_rules` | Identifiants de règles existants | Liste vide |
+| `allowlist` | Combinaisons exactes `path`, `line`, `rule` | Liste vide |
+| `severity` | `low`, `medium`, `high` | `low` |
+| `output` | `human`, `json` | `human` |
 
-`--json` force JSON même si la configuration demande la sortie humaine. Une
-configuration ne peut pas réactiver une sortie humaine demandée explicitement en
-JSON. Le fichier est limité à 1 Mio et ses erreurs restent volontairement
-génériques pour ne pas recopier une valeur sensible dans le terminal.
+Les exclusions du fichier complètent celles données avec `--exclude`. Le drapeau
+`--json` prend la priorité sur `output: human`.
+
+Le chargeur refuse les champs inconnus, les règles inexistantes, les documents
+YAML multiples et les configurations de plus de 1 Mio. Ses erreurs ne recopient
+pas le contenu du fichier.
+
+### Exclusions par défaut
+
+Les noms suivants sont ignorés à tous les niveaux de l’arborescence :
+
+```text
+.git
+node_modules
+vendor
+.gitignore
+```
+
+Les fichiers contenant des octets binaires, le texte UTF-8 invalide et les liens
+symboliques sont également ignorés. Un fichier texte est limité à 10 Mio et une
+ligne à 1 Mio. Une erreur de lecture invalide le scan complet.
+
+## Règles de détection
+
+| Identifiant | Détection | Sévérité |
+| --- | --- | --- |
+| `aws-access-key-id` | Identifiants AWS commençant par `AKIA` ou `ASIA` | HIGH |
+| `github-classic-token` | Tokens GitHub `ghp_`, `gho_` ou `ghu_` | HIGH |
+| `stripe-live-key` | Clés Stripe secrètes ou restreintes de production | HIGH |
+| `stripe-test-key` | Clés Stripe secrètes ou restreintes de test | MEDIUM |
+| `private-key-header` | En-têtes de clés privées PEM, OpenSSH et apparentés | HIGH |
+| `generic-token` | Affectations explicites de clés API, tokens ou secrets | MEDIUM |
+| `config-password` | Affectations explicites de mots de passe | MEDIUM |
+
+Les règles fournisseurs recherchent un format plausible ; elles ne vérifient pas
+la validité d’un credential auprès du fournisseur. Les règles génériques exigent
+un contexte d’affectation et filtrent notamment :
+
+- `YOUR_API_KEY_HERE`, `example-api-key`, `test-token` et `changeme` ;
+- les références telles que `${API_KEY}` ou `process.env.API_TOKEN` ;
+- les chaînes répétitives comme `xxxxxxxx` ;
+- les tokens génériques dont l’entropie est insuffisante ;
+- les affectations génériques dans README, Markdown, reStructuredText et AsciiDoc.
+
+Une règle fournisseur reste active dans la documentation et prend la priorité
+sur une règle générique pour éviter les doublons.
+
+### Limites
+
+Aucun scanner de secrets ne peut garantir l’absence de credentials. env-guard
+peut produire des faux positifs ou manquer :
+
+- un format fournisseur nouveau ou non couvert ;
+- un secret découpé sur plusieurs lignes ;
+- une valeur encodée, chiffrée ou construite dynamiquement ;
+- un token générique sans contexte d’affectation reconnaissable.
+
+Traitez chaque résultat comme un signal à vérifier. Si un secret réel a été
+commité, révoquez-le et remplacez-le ; supprimer le texte de l’historique ne rend
+pas le credential inoffensif.
 
 ## Format JSON
-
-Le format porte un numéro de version et utilise toujours un tableau pour
-`findings`, y compris lorsqu’il est vide :
 
 ```json
 {
@@ -177,183 +243,112 @@ Le format porte un numéro de version et utilise toujours un tableau pour
 }
 ```
 
-La sortie JSON se termine par un saut de ligne. Son code de sortie reste 0, 1,
-2 ou 3 selon le résultat du scan ; le JSON n’est donc pas une indication de
-succès à lui seul.
+`version` vaut actuellement `1`. `findings` est toujours un tableau, même sans
+résultat. La sortie se termine par un saut de ligne et ne contient jamais la
+valeur détectée.
 
-## Moteur de détection
-
-`scanner.NewDetector([]scanner.Rule{...})` valide les règles et compile leurs
-expressions régulières une seule fois. Chaque règle possède :
-
-- un identifiant unique, un type, un message descriptif et une sévérité ;
-- un motif appliqué ligne par ligne ;
-- un indice de capture désignant le secret (`0` pour la correspondance entière).
-
-Les sévérités disponibles sont `LOW`, `MEDIUM` et `HIGH`. Le constructeur refuse
-une liste vide, les métadonnées manquantes, les identifiants dupliqués, les motifs
-invalides, les motifs correspondant à une entrée vide et les indices de capture
-hors limites. Les captures absentes ou vides ne produisent pas de détection.
-
-`detector.Scan(ctx, fichier, lecteur)` renvoie des `Finding` contenant le type,
-la sévérité, le fichier, le numéro de ligne à partir de 1, l’identifiant de règle,
-le message et une valeur masquée. Le fichier est un libellé fourni par l’appelant :
-le moteur ne l’ouvre pas lui-même et ne ferme pas le lecteur fourni.
-
-La valeur détectée est entièrement remplacée par `[REDACTED]`, même pour un secret
-court. Le résultat ne conserve ni le secret ni sa ligne source. Les métadonnées
-des règles doivent être des descriptions statiques, sans credentials ; elles et
-le nom du fichier ne sont pas masqués. Les erreurs de validation n’affichent pas
-le motif invalide, et les erreurs du lecteur sont remplacées par `ErrRead` pour
-éviter d’exposer du texte source dans les diagnostics.
-
-L’ordre des résultats est déterministe : ligne, ordre des règles, puis position
-des correspondances pour chaque règle. Deux règles peuvent signaler le même
-emplacement. Un détecteur peut être réutilisé simultanément avec des lecteurs
-indépendants.
-
-### Limites actuelles
-
-- Les règles sont évaluées sur une ligne à la fois, sans détection multiligne.
-- Les fins de ligne LF et CRLF sont prises en charge, y compris sans saut de ligne final.
-- Une ligne est limitée à 1 Mio, hors fin de ligne. Le dépassement retourne
-  `ErrLineTooLong`, sans ignorer silencieusement la ligne.
-- Une erreur ou une annulation ne renvoie aucun résultat partiel. Une analyse sans
-  correspondance renvoie une liste vide, sans erreur.
-- L’annulation est contrôlée entre les lectures et les lignes. Elle ne peut pas
-  interrompre un lecteur déjà bloqué ou une expression régulière en cours.
-- La lecture est progressive, mais les résultats sont conservés en mémoire : leur
-  volume dépend du nombre de correspondances.
-- Un fichier texte est limité à 10 Mio. Une ligne reste limitée à 1 Mio.
-- Les fichiers contenant des octets de contrôle binaires ou du texte UTF-8
-  invalide sont ignorés.
-- `.git`, `node_modules`, `vendor` et les fichiers `.gitignore` sont ignorés par
-  défaut, quel que soit leur niveau dans l’arborescence.
-- Les liens symboliques et les autres entrées non régulières sont ignorés.
-- Une erreur de lecture invalide le rapport complet ; aucun résultat partiel
-  n’est présenté comme un scan réussi.
-- Le mode staged prend les fichiers ajoutés, copiés, modifiés ou renommés. Les
-  suppressions, liens symboliques et sous-modules sont ignorés.
-- Git doit être installé et le dossier courant doit appartenir à un dépôt Git.
-  Un blob staged dépassant 10 Mio fait échouer le scan avant son chargement.
-
-## Premières règles
-
-Le catalogue s’utilise avec `scanner.NewDetector(scanner.DefaultRules())`.
-`DefaultRules` renvoie une nouvelle liste à chaque appel : sa modification ne
-change pas les détecteurs existants ou les futurs appels.
-
-| Identifiant | Format recherché | Sévérité |
-| --- | --- | --- |
-| `aws-access-key-id` | `AKIA` ou `ASIA`, suivis de 16 caractères alphanumériques majuscules | HIGH |
-| `github-classic-token` | `ghp_`, `gho_` ou `ghu_`, suivis de 36 caractères alphanumériques | HIGH |
-| `stripe-live-key` | `sk_live_` ou `rk_live_`, suivis d’au moins 24 caractères alphanumériques | HIGH |
-| `stripe-test-key` | `sk_test_` ou `rk_test_`, suivis d’au moins 24 caractères alphanumériques | MEDIUM |
-| `private-key-header` | En-tête PEM privé, RSA, EC, DSA, OpenSSH ou PKCS#8 chiffré | HIGH |
-| `generic-token` | Affectation explicite d’une clé API, d’un token, secret ou credential | MEDIUM |
-| `config-password` | Affectation explicite d’un mot de passe | MEDIUM |
-
-Ces règles signalent des formats plausibles. Elles ne vérifient ni l’existence,
-ni la validité, ni les permissions d’un credential, et n’effectuent aucun appel
-réseau. Les longueurs sont des choix de détection, pas une garantie que tous les
-formats actuels ou futurs des fournisseurs seront reconnus.
-
-Un identifiant AWS seul ne suffit pas à s’authentifier ; il reste un indice de
-credentials potentiellement présents à proximité. Les clés Stripe publiques
-(`pk_`) ne sont pas signalées par ce catalogue. Les clés secrètes de test sont
-signalées avec une sévérité inférieure : elles ne sont pas des clés publiques.
-Un en-tête de clé privée déclenche une détection même si le corps est absent ou
-invalide ; le moteur ne valide pas de bloc cryptographique.
-
-Les tokens GitHub à permissions fines (`github_pat_`), les tokens d’installation
-(`ghs_`) et de rafraîchissement (`ghr_`), les anciens tokens sans préfixe, les clés
-OpenAI et les secrets JWT ne possèdent pas encore de règle fournisseur dédiée.
-Ils peuvent seulement être signalés par une affectation générique. La présence
-d’un fichier `.env` ne produit pas, à elle seule, de détection.
-
-Les règles génériques exigent un contexte d’affectation. Elles écartent les
-placeholders usuels, les références à des variables d’environnement et les
-valeurs répétitives. Les tokens génériques doivent aussi atteindre une entropie
-de Shannon minimale. Ces règles génériques sont désactivées dans les fichiers de
-documentation (`.md`, `.rst`, `.adoc`, README, LICENSE et CHANGELOG).
-
-Une règle fournisseur reste active dans la documentation et prend la priorité sur
-une règle générique pour la même valeur. Cela évite un doublon sans masquer une
-clé reconnaissable. L’allowlist peut cibler exactement un chemin, une ligne et
-une règle depuis `.env-guard.yaml`.
-
-Références des préfixes : [AWS STS](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetAccessKeyInfo.html),
-[formats GitHub](https://github.blog/engineering/behind-githubs-new-authentication-token-formats/)
-et [clés Stripe](https://docs.stripe.com/keys).
-
-## Codes de sortie actuels du CLI
+## Codes de sortie
 
 | Code | Signification |
 | --- | --- |
-| 0 | Aucun secret détecté, ou aide affichée avec succès |
-| 1 | Un ou plusieurs secrets potentiels détectés |
-| 2 | Commande ou arguments invalides |
-| 3 | Erreur de lecture, de scan ou d’écriture de la sortie |
+| `0` | Aucun secret détecté, ou aide affichée avec succès |
+| `1` | Un ou plusieurs secrets potentiels détectés |
+| `2` | Commande ou arguments invalides |
+| `3` | Erreur de configuration, de lecture, de scan ou de sortie |
 
-La sortie humaine affiche uniquement `[REDACTED]` à la place de la valeur trouvée.
+## GitHub Actions
 
-## Développement et tests
+Exemple d’utilisation dans un autre dépôt :
 
-```sh
-go test ./...
-go vet ./...
-go fmt ./...
+```yaml
+- name: Installer Go
+  uses: actions/setup-go@v7
+  with:
+    go-version: "1.27"
+
+- name: Installer env-guard
+  run: go install github.com/aaronladron/env-guard/cmd/env-guard@latest
+
+- name: Rechercher les secrets
+  run: "$(go env GOPATH)/bin/env-guard" scan
 ```
 
-Les tests du moteur utilisent des règles et des valeurs explicitement synthétiques,
-sans credentials réels. Les fixtures de `tests/fixtures` sont des gabarits ; les
-valeurs au format fournisseur sont construites uniquement en mémoire pendant les
-tests. Aucun compte ni service externe n’est utilisé. Ils vérifient les captures, les sévérités, les numéros de
-ligne, le masquage, la stabilité des règles, les analyses concurrentes, les limites
-de taille, les erreurs de lecture, l’annulation, les exclusions, les fichiers
-binaires, les placeholders, l’entropie, l’allowlist et les codes de sortie.
+Le projet lui-même utilise :
 
-Le détecteur de courses peut également être utilisé avec une chaîne C compatible :
+- `ci.yml` pour les modules, le formatage, `go vet`, les tests avec détection de
+  courses et les compilations Linux/macOS/Windows ;
+- `release.yml` pour publier les cinq archives multiplateformes avec GoReleaser
+  lors de la création d’un tag `v*`.
 
-```sh
-go test -race ./...
+## Architecture
+
+```text
+cmd/env-guard/       point d’entrée du binaire
+internal/cli/        commandes, arguments et codes de sortie
+internal/config/     configuration YAML stricte
+internal/git/        lecture des blobs staged et chemin des hooks
+internal/hook/       installation et restauration du hook pre-commit
+internal/output/     sorties humaine et JSON
+internal/scanner/    parcours, règles, filtres et résultats
+tests/fixtures/      gabarits de tests sans credentials réels
 ```
 
-La dernière étape complétera la documentation du projet et les fichiers destinés
-aux contributeurs et au signalement de vulnérabilités.
+Le moteur accepte un `io.Reader`, un `fs.FS` ou une collection de fichiers en
+mémoire. Il ne dépend ni de Git ni du système d’exploitation. Les règles, le
+parcours, les filtres et la présentation restent séparés.
 
-## Intégration continue
-
-`.github/workflows/ci.yml` s’exécute sur chaque pull request et chaque push vers
-`main`. Un job Linux vérifie les modules, le formatage, `go vet` et les tests avec
-le détecteur de courses. Une matrice exécute les tests et compile le CLI sur
-Linux, macOS et Windows.
-
-Les commandes locales équivalentes sont regroupées dans le `Makefile` :
+## Développement
 
 ```sh
+git clone https://github.com/aaronladron/env-guard.git
+cd env-guard
+go mod download
 make check
-make test-race
 make build
 ```
 
-## Releases
+Commandes disponibles :
 
-Un tag Git commençant par `v` déclenche `.github/workflows/release.yml`.
-GoReleaser v2.18.1 crée une release GitHub avec les archives suivantes :
+```sh
+make test
+make test-race
+make vet
+make fmt
+make fmt-check
+make mod-verify
+```
 
-- macOS amd64 et arm64 ;
-- Linux amd64 et arm64 ;
-- Windows amd64.
-
-Les archives Unix utilisent `tar.gz` et Windows utilise `zip`. Un fichier
-`checksums.txt` contient les sommes SHA-256. Le workflow récupère tout
-l’historique Git pour générer le changelog et possède uniquement la permission
-`contents: write` nécessaire à la publication.
-
-Tester la configuration sans publier :
+Valider une release sans la publier :
 
 ```sh
 goreleaser check
 goreleaser release --snapshot --clean
 ```
+
+## Tests
+
+La suite utilise uniquement le paquet standard `testing` :
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Les fixtures sont des gabarits. Les chaînes qui ressemblent à des formats
+fournisseurs sont construites en mémoire avec des caractères répétés et ne
+proviennent d’aucun compte réel.
+
+## Contribuer
+
+Consultez [CONTRIBUTING.md](CONTRIBUTING.md) pour préparer une modification,
+ajouter une règle et exécuter les contrôles attendus.
+
+## Sécurité
+
+Consultez [SECURITY.md](SECURITY.md) pour signaler une vulnérabilité de manière
+privée. Ne publiez jamais de secret, token ou credential dans une issue.
+
+## Licence
+
+Distribué sous licence MIT. Voir [LICENSE](LICENSE).
