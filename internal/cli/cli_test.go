@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -19,12 +20,13 @@ func TestRun(t *testing.T) {
 		{"help", []string{"--help"}, 0, "env-guard scan", ""},
 		{"short help", []string{"-h"}, 0, "Usage:", ""},
 		{"help command", []string{"help"}, 0, "Usage:", ""},
-		{"scan help", []string{"scan", "--help"}, 0, "No files are inspected.", ""},
+		{"scan help", []string{"scan", "--help"}, 0, "--exclude", ""},
 		{"scan short help", []string{"scan", "-h"}, 0, "Usage: env-guard scan", ""},
-		{"unfinished scan fails closed", []string{"scan"}, 3, "", "no files were scanned"},
 		{"unknown command", []string{"unknown"}, 2, "", "unsupported command"},
 		{"unknown flag", []string{"--unknown"}, 2, "", "unsupported command"},
 		{"staged is not supported yet", []string{"scan", "--staged"}, 2, "", "unsupported command"},
+		{"missing exclusion", []string{"scan", "--exclude"}, 2, "", "unsupported command"},
+		{"invalid exclusion", []string{"scan", "--exclude", "../outside"}, 2, "", "unsupported command"},
 		{"unexpected path", []string{"scan", "some-path"}, 2, "", "unsupported command"},
 		{"extra help arguments", []string{"--help", "extra"}, 2, "", "unsupported command"},
 		{"extra scan help arguments", []string{"scan", "--help", "extra"}, 2, "", "unsupported command"},
@@ -44,6 +46,51 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScanCommand(t *testing.T) {
+	t.Run("clean project", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile("config.txt", []byte("port=8080\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitOK {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "1 files scanned") || !strings.Contains(stdout.String(), "No potential secrets") {
+			t.Fatalf("unexpected output: %q", stdout.String())
+		}
+	})
+
+	t.Run("finding", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		value := "AKIA" + strings.Repeat("A", 16)
+		if err := os.WriteFile("config.txt", []byte("key="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan"}, &stdout, &stderr); code != ExitFindings {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), value) || !strings.Contains(stdout.String(), "[REDACTED]") || !strings.Contains(stdout.String(), "config.txt:1") {
+			t.Fatalf("unexpected output: %q", stdout.String())
+		}
+	})
+
+	t.Run("repeated exclusions", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		for _, name := range []string{"one.txt", "two.txt", "keep.txt"} {
+			if err := os.WriteFile(name, []byte("port=8080\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var stdout, stderr bytes.Buffer
+		code := Run([]string{"scan", "--exclude", "one.txt", "--exclude=two.txt"}, &stdout, &stderr)
+		if code != ExitOK || !strings.Contains(stdout.String(), "1 files scanned") {
+			t.Fatalf("exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+		}
+	})
 }
 
 type failingWriter struct{}
