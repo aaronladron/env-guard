@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	gitrepo "github.com/aaronladron/env-guard/internal/git"
+	"github.com/aaronladron/env-guard/internal/hook"
 	"github.com/aaronladron/env-guard/internal/scanner"
 )
 
@@ -25,10 +26,21 @@ const help = `env-guard — detect potential secrets before committing to Git
 Usage:
   env-guard --help
   env-guard scan [--staged] [--exclude MOTIF]
+  env-guard init [--wrap | --remove]
   env-guard scan --help
 
 Commands:
   scan    Scan the current project
+  init    Manage the Git pre-commit hook
+`
+
+const initHelp = `Usage: env-guard init [--wrap | --remove]
+
+Install the env-guard pre-commit hook.
+
+Options:
+  --wrap      Preserve and run an existing hook before env-guard
+  --remove    Remove env-guard and restore a preserved hook
 `
 
 const scanHelp = `Usage: env-guard scan [--staged] [--exclude MOTIF]
@@ -56,9 +68,85 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return write(stdout, stderr, scanHelp)
 		}
 		return runScan(args[1:], stdout, stderr)
+	case "init":
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			return write(stdout, stderr, initHelp)
+		}
+		return runInit(args[1:], stdout, stderr)
 	default:
 		return usage(stderr)
 	}
+}
+
+func runInit(args []string, stdout, stderr io.Writer) int {
+	wrap, remove := false, false
+	for _, arg := range args {
+		switch arg {
+		case "--wrap":
+			if wrap || remove {
+				return usage(stderr)
+			}
+			wrap = true
+		case "--remove":
+			if remove || wrap {
+				return usage(stderr)
+			}
+			remove = true
+		default:
+			return usage(stderr)
+		}
+	}
+	repository, err := gitrepo.Open(".")
+	if errors.Is(err, gitrepo.ErrExecutableNotFound) {
+		fmt.Fprintln(stderr, "Error: Git executable not found")
+		return ExitInternal
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "Error: unable to initialize Git hook.")
+		return ExitInternal
+	}
+	path, err := repository.PreCommitHookPath(context.Background())
+	if err != nil {
+		fmt.Fprintln(stderr, "Error: current directory is not a Git repository.")
+		return ExitInternal
+	}
+	if remove {
+		restored, err := hook.Remove(path)
+		if errors.Is(err, hook.ErrNotInstalled) {
+			fmt.Fprintln(stderr, "Error: env-guard pre-commit hook is not installed.")
+			return ExitUsage
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "Error: unable to remove the pre-commit hook.")
+			return ExitInternal
+		}
+		message := "env-guard pre-commit hook removed."
+		if restored {
+			message = "env-guard pre-commit hook removed; previous hook restored."
+		}
+		return write(stdout, stderr, message+"\n")
+	}
+	result, err := hook.Install(path, wrap)
+	if errors.Is(err, hook.ErrExistingHook) {
+		fmt.Fprintln(stderr, "Error: a pre-commit hook already exists.")
+		fmt.Fprintln(stderr, "Run 'env-guard init --wrap' to preserve it and install env-guard safely.")
+		return ExitUsage
+	}
+	if errors.Is(err, hook.ErrBackupExists) {
+		fmt.Fprintln(stderr, "Error: an env-guard hook backup already exists; no files were changed.")
+		return ExitInternal
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "Error: unable to install the pre-commit hook.")
+		return ExitInternal
+	}
+	if result.AlreadyInstalled {
+		return write(stdout, stderr, "env-guard pre-commit hook is already installed.\n")
+	}
+	if result.Wrapped {
+		return write(stdout, stderr, "env-guard pre-commit hook installed; previous hook preserved.\n")
+	}
+	return write(stdout, stderr, "env-guard pre-commit hook installed.\n")
 }
 
 func runScan(args []string, stdout, stderr io.Writer) int {

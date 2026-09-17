@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,23 @@ var (
 type File struct {
 	Path    string
 	Content []byte
+}
+
+// PreCommitHookPath résout le chemin réellement utilisé par Git, y compris
+// lorsque core.hooksPath est configuré.
+func (r *Repository) PreCommitHookPath(ctx context.Context) (string, error) {
+	if r == nil || r.executable == "" {
+		return "", ErrCommand
+	}
+	output, err := r.output(ctx, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit")
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSuffix(strings.TrimSuffix(string(output), "\n"), "\r")
+	if value == "" || strings.ContainsRune(value, 0) || !filepath.IsAbs(value) {
+		return "", ErrCommand
+	}
+	return filepath.Clean(value), nil
 }
 
 type Repository struct {

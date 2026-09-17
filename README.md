@@ -3,9 +3,9 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 5.** La commande `scan` parcourt le dossier
-courant ou uniquement le contenu staged dans Git. Le hook, la configuration et
-le format JSON restent à venir.
+**État du développement : étape 6.** La commande `scan` parcourt le dossier
+courant ou uniquement le contenu staged dans Git. `init` gère le hook pre-commit.
+La configuration et le format JSON restent à venir.
 
 ## Compiler et exécuter
 
@@ -40,12 +40,46 @@ Ce mode lit les blobs présents dans l’index Git. Une modification non staged 
 même fichier ne change donc pas le résultat. Les fichiers non suivis et les
 suppressions staged ne sont pas analysés.
 
+## Hook pre-commit
+
+Installer le hook dans le dépôt courant :
+
+```sh
+env-guard init
+```
+
+L’installation est idempotente. Le hook lance `env-guard scan --staged` et bloque
+le commit si des secrets potentiels sont détectés, si le scan échoue ou si le
+binaire `env-guard` n’est pas disponible dans le `PATH` du processus Git.
+
+Un hook existant n’est jamais écrasé. La commande s’arrête et propose de le
+conserver explicitement :
+
+```sh
+env-guard init --wrap
+```
+
+L’ancien hook est déplacé vers `pre-commit.env-guard-backup`. Le nouveau hook
+l’exécute en premier et ne lance env-guard que s’il réussit. Le type de l’ancien
+hook n’a pas d’importance : son shebang d’origine reste utilisé.
+
+Retirer env-guard :
+
+```sh
+env-guard init --remove
+```
+
+Un hook installé seul est supprimé. Un hook enveloppé est remplacé par sa
+sauvegarde, avec son contenu et ses permissions d’origine. La commande respecte
+également `core.hooksPath` lorsque cette option Git est configurée.
+
 ## Architecture
 
 ```text
 cmd/env-guard/main.go           Point d’entrée et code de sortie du processus
 internal/cli/                  Arguments, aide et sorties du CLI
 internal/git/                  Lecture sûre des fichiers présents dans l’index
+internal/hook/                 Installation et retrait du hook pre-commit
 internal/scanner/
   scanner.go                   Lecture bornée du flux et annulation
   files.go                     Parcours, exclusions et fichiers binaires
@@ -211,5 +245,5 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront le hook pre-commit, JSON et la configuration,
-puis la CI, les releases et la documentation complète.
+Les étapes suivantes ajouteront JSON et la configuration, puis la CI, les
+releases et la documentation complète.
