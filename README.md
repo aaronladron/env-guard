@@ -3,9 +3,10 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 7.** La commande `scan` parcourt le dossier
+**État du développement : étape 8.** La commande `scan` parcourt le dossier
 courant ou uniquement le contenu staged dans Git. `init` gère le hook pre-commit.
-La configuration YAML et les sorties humaine et JSON sont disponibles.
+La configuration YAML et les sorties humaine et JSON sont disponibles. GitHub
+Actions vérifie le projet et GoReleaser construit les releases multiplateformes.
 
 ## Compiler et exécuter
 
@@ -266,8 +267,9 @@ invalide ; le moteur ne valide pas de bloc cryptographique.
 
 Les tokens GitHub à permissions fines (`github_pat_`), les tokens d’installation
 (`ghs_`) et de rafraîchissement (`ghr_`), les anciens tokens sans préfixe, les clés
-OpenAI, les secrets JWT et les affectations génériques ne sont pas encore couverts.
-La présence d’un fichier `.env` ne produit pas, à elle seule, de détection.
+OpenAI et les secrets JWT ne possèdent pas encore de règle fournisseur dédiée.
+Ils peuvent seulement être signalés par une affectation générique. La présence
+d’un fichier `.env` ne produit pas, à elle seule, de détection.
 
 Les règles génériques exigent un contexte d’affectation. Elles écartent les
 placeholders usuels, les références à des variables d’environnement et les
@@ -277,8 +279,8 @@ documentation (`.md`, `.rst`, `.adoc`, README, LICENSE et CHANGELOG).
 
 Une règle fournisseur reste active dans la documentation et prend la priorité sur
 une règle générique pour la même valeur. Cela évite un doublon sans masquer une
-clé reconnaissable. L’allowlist interne peut cibler exactement un chemin, une
-ligne et une règle ; son chargement depuis la configuration viendra à l’étape 7.
+clé reconnaissable. L’allowlist peut cibler exactement un chemin, une ligne et
+une règle depuis `.env-guard.yaml`.
 
 Références des préfixes : [AWS STS](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetAccessKeyInfo.html),
 [formats GitHub](https://github.blog/engineering/behind-githubs-new-authentication-token-formats/)
@@ -317,4 +319,41 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront la CI, les releases et la documentation complète.
+La dernière étape complétera la documentation du projet et les fichiers destinés
+aux contributeurs et au signalement de vulnérabilités.
+
+## Intégration continue
+
+`.github/workflows/ci.yml` s’exécute sur chaque pull request et chaque push vers
+`main`. Un job Linux vérifie les modules, le formatage, `go vet` et les tests avec
+le détecteur de courses. Une matrice exécute les tests et compile le CLI sur
+Linux, macOS et Windows.
+
+Les commandes locales équivalentes sont regroupées dans le `Makefile` :
+
+```sh
+make check
+make test-race
+make build
+```
+
+## Releases
+
+Un tag Git commençant par `v` déclenche `.github/workflows/release.yml`.
+GoReleaser v2.18.1 crée une release GitHub avec les archives suivantes :
+
+- macOS amd64 et arm64 ;
+- Linux amd64 et arm64 ;
+- Windows amd64.
+
+Les archives Unix utilisent `tar.gz` et Windows utilise `zip`. Un fichier
+`checksums.txt` contient les sommes SHA-256. Le workflow récupère tout
+l’historique Git pour générer le changelog et possède uniquement la permission
+`contents: write` nécessaire à la publication.
+
+Tester la configuration sans publier :
+
+```sh
+goreleaser check
+goreleaser release --snapshot --clean
+```
