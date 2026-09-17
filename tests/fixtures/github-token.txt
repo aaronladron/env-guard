@@ -1,0 +1,3 @@
+[github]
+repository = "sample/project"
+token = "{{GITHUB_TOKEN}}"

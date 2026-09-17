@@ -3,10 +3,9 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 2.** Le CLI minimal et le moteur de détection
-sont disponibles. Aucune règle de détection réelle n’est encore fournie et le
-moteur n’est pas encore raccordé à la commande `scan`. Cette version ne peut pas
-servir de contrôle de sécurité.
+**État du développement : étape 3.** Le CLI minimal, le moteur et un premier
+catalogue de règles sont disponibles. Le moteur n’est pas encore raccordé à la
+commande `scan`. Cette version ne peut pas servir de contrôle de sécurité.
 
 ## Compiler et exécuter
 
@@ -40,6 +39,8 @@ internal/scanner/
   scanner.go                   Lecture bornée du flux et annulation
   detector.go                  Validation et exécution des règles injectées
   finding.go                   Résultats localisés et niveaux de sévérité
+  patterns.go                  Catalogue des premières règles
+  patterns_test.go             Formats reconnus et fixtures
   detector_test.go             Règles, masquage et scans concurrents
   scanner_test.go              Lecture, limites et erreurs
 ```
@@ -47,8 +48,8 @@ internal/scanner/
 Le point d’entrée délègue au CLI, dont les sorties sont injectées pour permettre
 les tests sans quitter le processus. Le moteur reçoit un `io.Reader` : il est
 indépendant du système de fichiers, de Git et du système d’exploitation. Les
-règles sont fournies séparément au constructeur ; aucune règle fournisseur n’est
-codée dans le moteur. Le parcours des fichiers viendra dans une étape suivante.
+règles sont fournies séparément au constructeur ; le catalogue fournisseur reste
+séparé de la lecture et de la détection. Le parcours des fichiers viendra dans une étape suivante.
 
 ## Moteur de détection
 
@@ -93,8 +94,48 @@ indépendants.
   interrompre un lecteur déjà bloqué ou une expression régulière en cours.
 - La lecture est progressive, mais les résultats sont conservés en mémoire : leur
   volume dépend du nombre de correspondances.
-- Les règles réelles, la réduction des faux positifs, les exclusions, les fichiers
+- La réduction des faux positifs, les exclusions, le filtrage des fichiers
   binaires et le parcours des répertoires ne sont pas encore implémentés.
+
+## Premières règles
+
+Le catalogue s’utilise avec `scanner.NewDetector(scanner.DefaultRules())`.
+`DefaultRules` renvoie une nouvelle liste à chaque appel : sa modification ne
+change pas les détecteurs existants ou les futurs appels.
+
+| Identifiant | Format recherché | Sévérité |
+| --- | --- | --- |
+| `aws-access-key-id` | `AKIA` ou `ASIA`, suivis de 16 caractères alphanumériques majuscules | HIGH |
+| `github-classic-token` | `ghp_`, `gho_` ou `ghu_`, suivis de 36 caractères alphanumériques | HIGH |
+| `stripe-live-key` | `sk_live_` ou `rk_live_`, suivis d’au moins 24 caractères alphanumériques | HIGH |
+| `stripe-test-key` | `sk_test_` ou `rk_test_`, suivis d’au moins 24 caractères alphanumériques | MEDIUM |
+| `private-key-header` | En-tête PEM privé, RSA, EC, DSA, OpenSSH ou PKCS#8 chiffré | HIGH |
+
+Ces règles signalent des formats plausibles. Elles ne vérifient ni l’existence,
+ni la validité, ni les permissions d’un credential, et n’effectuent aucun appel
+réseau. Les longueurs sont des choix de détection, pas une garantie que tous les
+formats actuels ou futurs des fournisseurs seront reconnus.
+
+Un identifiant AWS seul ne suffit pas à s’authentifier ; il reste un indice de
+credentials potentiellement présents à proximité. Les clés Stripe publiques
+(`pk_`) ne sont pas signalées par ce catalogue. Les clés secrètes de test sont
+signalées avec une sévérité inférieure : elles ne sont pas des clés publiques.
+Un en-tête de clé privée déclenche une détection même si le corps est absent ou
+invalide ; le moteur ne valide pas de bloc cryptographique.
+
+Les tokens GitHub à permissions fines (`github_pat_`), les tokens d’installation
+(`ghs_`) et de rafraîchissement (`ghr_`), les anciens tokens sans préfixe, les clés
+OpenAI, les secrets JWT et les affectations génériques ne sont pas encore couverts.
+La présence d’un fichier `.env` ne produit pas, à elle seule, de détection.
+
+Les placeholders courts fournis dans les fixtures ne correspondent pas à ces
+formats. En revanche, un exemple de documentation reproduisant un format complet
+sera signalé à ce stade. L’allowlist, le contexte documentaire et l’entropie seront
+traités à l’étape suivante, avant l’ajout des règles génériques.
+
+Références des préfixes : [AWS STS](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetAccessKeyInfo.html),
+[formats GitHub](https://github.blog/engineering/behind-githubs-new-authentication-token-formats/)
+et [clés Stripe](https://docs.stripe.com/keys).
 
 ## Codes de sortie actuels du CLI
 
@@ -116,7 +157,9 @@ go fmt ./...
 ```
 
 Les tests du moteur utilisent des règles et des valeurs explicitement synthétiques,
-sans credentials réels. Ils vérifient les captures, les sévérités, les numéros de
+sans credentials réels. Les fixtures de `tests/fixtures` sont des gabarits ; les
+valeurs au format fournisseur sont construites uniquement en mémoire pendant les
+tests. Aucun compte ni service externe n’est utilisé. Ils vérifient les captures, les sévérités, les numéros de
 ligne, le masquage, la stabilité des règles, les analyses concurrentes, les limites
 de taille, les erreurs de lecture et l’annulation.
 
@@ -126,6 +169,6 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront les premières règles réelles, les exclusions et
-les faux positifs, Git staged, le hook pre-commit, JSON et la configuration, puis
+Les étapes suivantes ajouteront les exclusions, la réduction des faux positifs
+et les règles complémentaires, Git staged, le hook pre-commit, JSON et la configuration, puis
 la CI, les releases et la documentation complète.
