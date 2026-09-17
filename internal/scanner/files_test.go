@@ -111,3 +111,40 @@ func TestScanFSFailuresReturnNoReport(t *testing.T) {
 		}
 	})
 }
+
+func TestScanFilesOrdersAndFiltersSources(t *testing.T) {
+	key := "AKIA" + strings.Repeat("A", 16)
+	files := []File{
+		{Path: "z.txt", Content: []byte(key)},
+		{Path: "node_modules/pkg/a.txt", Content: []byte(key)},
+		{Path: "a.txt", Content: []byte(key)},
+		{Path: "image.bin", Content: []byte("x\x00" + key)},
+	}
+	d := testDetector(t, DefaultRules()...)
+	report, err := d.ScanFiles(context.Background(), files, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilesScanned != 2 || report.SkippedEntries != 2 || len(report.Findings) != 2 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if report.Findings[0].File != "a.txt" || report.Findings[1].File != "z.txt" {
+		t.Fatalf("findings are not ordered: %+v", report.Findings)
+	}
+	if files[0].Path != "z.txt" {
+		t.Fatal("input order was modified")
+	}
+}
+
+func TestScanFilesRejectsInvalidOrDuplicatePaths(t *testing.T) {
+	d := testDetector(t, DefaultRules()...)
+	for _, files := range [][]File{
+		{{Path: "../outside", Content: []byte("clean")}},
+		{{Path: "same.txt"}, {Path: "same.txt"}},
+	} {
+		report, err := d.ScanFiles(context.Background(), files, Options{})
+		if !errors.Is(err, ErrRead) || report.Findings != nil {
+			t.Fatalf("report = %+v, error = %v", report, err)
+		}
+	}
+}

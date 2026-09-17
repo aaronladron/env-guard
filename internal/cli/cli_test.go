@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,7 +26,7 @@ func TestRun(t *testing.T) {
 		{"scan short help", []string{"scan", "-h"}, 0, "Usage: env-guard scan", ""},
 		{"unknown command", []string{"unknown"}, 2, "", "unsupported command"},
 		{"unknown flag", []string{"--unknown"}, 2, "", "unsupported command"},
-		{"staged is not supported yet", []string{"scan", "--staged"}, 2, "", "unsupported command"},
+		{"duplicate staged option", []string{"scan", "--staged", "--staged"}, 2, "", "unsupported command"},
 		{"missing exclusion", []string{"scan", "--exclude"}, 2, "", "unsupported command"},
 		{"invalid exclusion", []string{"scan", "--exclude", "../outside"}, 2, "", "unsupported command"},
 		{"unexpected path", []string{"scan", "some-path"}, 2, "", "unsupported command"},
@@ -89,6 +91,52 @@ func TestScanCommand(t *testing.T) {
 		code := Run([]string{"scan", "--exclude", "one.txt", "--exclude=two.txt"}, &stdout, &stderr)
 		if code != ExitOK || !strings.Contains(stdout.String(), "1 files scanned") {
 			t.Fatalf("exit code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("staged content", func(t *testing.T) {
+		executable, err := exec.LookPath("git")
+		if err != nil {
+			t.Skip("git is not installed")
+		}
+		directory := t.TempDir()
+		t.Chdir(directory)
+		command := exec.Command(executable, "init", "--quiet")
+		command.Dir = directory
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, output)
+		}
+		value := "AKIA" + strings.Repeat("A", 16)
+		path := filepath.Join(directory, "config.txt")
+		if err := os.WriteFile(path, []byte("key="+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		command = exec.Command(executable, "add", "config.txt")
+		command.Dir = directory
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git add: %v: %s", err, output)
+		}
+		if err := os.WriteFile(path, []byte("working tree is clean\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan", "--staged"}, &stdout, &stderr); code != ExitFindings {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), value) || !strings.Contains(stdout.String(), "config.txt:1") {
+			t.Fatalf("unexpected output: %q", stdout.String())
+		}
+	})
+
+	t.Run("git executable missing", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("PATH", t.TempDir())
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{"scan", "--staged"}, &stdout, &stderr); code != ExitInternal {
+			t.Fatalf("exit code = %d", code)
+		}
+		if stderr.String() != "Error: Git executable not found\n" || stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
 		}
 	})
 }
