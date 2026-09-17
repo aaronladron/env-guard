@@ -3,9 +3,9 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 3.** Le CLI minimal, le moteur et un premier
-catalogue de règles sont disponibles. Le moteur n’est pas encore raccordé à la
-commande `scan`. Cette version ne peut pas servir de contrôle de sécurité.
+**État du développement : étape 4.** La commande `scan` parcourt le dossier
+courant, applique les règles disponibles et retourne un code adapté au résultat.
+L’analyse Git staged, le hook, la configuration et le format JSON restent à venir.
 
 ## Compiler et exécuter
 
@@ -20,15 +20,15 @@ go build -o bin/env-guard ./cmd/env-guard
 
 Sous Windows, utiliser `-o bin/env-guard.exe`, puis exécuter ce fichier.
 
-Pour l’instant, `scan` écrit ce message sur la sortie d’erreur et retourne le code 3 :
+Exclure un nom dans toute l’arborescence ou un chemin relatif :
 
-```text
-Error: scanning is not implemented yet; no files were scanned.
+```sh
+env-guard scan --exclude generated --exclude 'fixtures/*.txt'
 ```
 
-Ce comportement évite de signaler un contrôle réussi alors que le scanner complet
-n’existe pas encore. `scan --help` affiche l’aide et retourne 0. Les commandes,
-options et arguments non pris en charge sont rejetés, notamment `--staged`.
+L’option peut être répétée et accepte aussi la forme `--exclude=generated`.
+Les commandes, options et arguments non pris en charge sont rejetés, notamment
+`--staged` à ce stade.
 
 ## Architecture
 
@@ -37,7 +37,9 @@ cmd/env-guard/main.go           Point d’entrée et code de sortie du processus
 internal/cli/                  Arguments, aide et sorties du CLI
 internal/scanner/
   scanner.go                   Lecture bornée du flux et annulation
+  files.go                     Parcours, exclusions et fichiers binaires
   detector.go                  Validation et exécution des règles injectées
+  filter.go                    Placeholders, documentation et entropie
   finding.go                   Résultats localisés et niveaux de sévérité
   patterns.go                  Catalogue des premières règles
   patterns_test.go             Formats reconnus et fixtures
@@ -49,7 +51,11 @@ Le point d’entrée délègue au CLI, dont les sorties sont injectées pour per
 les tests sans quitter le processus. Le moteur reçoit un `io.Reader` : il est
 indépendant du système de fichiers, de Git et du système d’exploitation. Les
 règles sont fournies séparément au constructeur ; le catalogue fournisseur reste
-séparé de la lecture et de la détection. Le parcours des fichiers viendra dans une étape suivante.
+séparé de la lecture, du parcours et de la détection.
+
+`ScanFS` travaille avec un `fs.FS`, ce qui garde le parcours testable et portable.
+Le CLI ouvre le dossier courant avec `os.OpenRoot` et ne suit pas les liens
+symboliques rencontrés pendant le parcours.
 
 ## Moteur de détection
 
@@ -94,8 +100,14 @@ indépendants.
   interrompre un lecteur déjà bloqué ou une expression régulière en cours.
 - La lecture est progressive, mais les résultats sont conservés en mémoire : leur
   volume dépend du nombre de correspondances.
-- La réduction des faux positifs, les exclusions, le filtrage des fichiers
-  binaires et le parcours des répertoires ne sont pas encore implémentés.
+- Un fichier texte est limité à 10 Mio. Une ligne reste limitée à 1 Mio.
+- Les fichiers contenant des octets de contrôle binaires ou du texte UTF-8
+  invalide sont ignorés.
+- `.git`, `node_modules`, `vendor` et les fichiers `.gitignore` sont ignorés par
+  défaut, quel que soit leur niveau dans l’arborescence.
+- Les liens symboliques et les autres entrées non régulières sont ignorés.
+- Une erreur de lecture invalide le rapport complet ; aucun résultat partiel
+  n’est présenté comme un scan réussi.
 
 ## Premières règles
 
@@ -110,6 +122,8 @@ change pas les détecteurs existants ou les futurs appels.
 | `stripe-live-key` | `sk_live_` ou `rk_live_`, suivis d’au moins 24 caractères alphanumériques | HIGH |
 | `stripe-test-key` | `sk_test_` ou `rk_test_`, suivis d’au moins 24 caractères alphanumériques | MEDIUM |
 | `private-key-header` | En-tête PEM privé, RSA, EC, DSA, OpenSSH ou PKCS#8 chiffré | HIGH |
+| `generic-token` | Affectation explicite d’une clé API, d’un token, secret ou credential | MEDIUM |
+| `config-password` | Affectation explicite d’un mot de passe | MEDIUM |
 
 Ces règles signalent des formats plausibles. Elles ne vérifient ni l’existence,
 ni la validité, ni les permissions d’un credential, et n’effectuent aucun appel
@@ -128,10 +142,16 @@ Les tokens GitHub à permissions fines (`github_pat_`), les tokens d’installat
 OpenAI, les secrets JWT et les affectations génériques ne sont pas encore couverts.
 La présence d’un fichier `.env` ne produit pas, à elle seule, de détection.
 
-Les placeholders courts fournis dans les fixtures ne correspondent pas à ces
-formats. En revanche, un exemple de documentation reproduisant un format complet
-sera signalé à ce stade. L’allowlist, le contexte documentaire et l’entropie seront
-traités à l’étape suivante, avant l’ajout des règles génériques.
+Les règles génériques exigent un contexte d’affectation. Elles écartent les
+placeholders usuels, les références à des variables d’environnement et les
+valeurs répétitives. Les tokens génériques doivent aussi atteindre une entropie
+de Shannon minimale. Ces règles génériques sont désactivées dans les fichiers de
+documentation (`.md`, `.rst`, `.adoc`, README, LICENSE et CHANGELOG).
+
+Une règle fournisseur reste active dans la documentation et prend la priorité sur
+une règle générique pour la même valeur. Cela évite un doublon sans masquer une
+clé reconnaissable. L’allowlist interne peut cibler exactement un chemin, une
+ligne et une règle ; son chargement depuis la configuration viendra à l’étape 7.
 
 Références des préfixes : [AWS STS](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetAccessKeyInfo.html),
 [formats GitHub](https://github.blog/engineering/behind-githubs-new-authentication-token-formats/)
@@ -141,12 +161,12 @@ et [clés Stripe](https://docs.stripe.com/keys).
 
 | Code | Signification |
 | --- | --- |
-| 0 | Aide affichée avec succès |
+| 0 | Aucun secret détecté, ou aide affichée avec succès |
+| 1 | Un ou plusieurs secrets potentiels détectés |
 | 2 | Commande ou arguments invalides |
-| 3 | Scan indisponible ou erreur d’écriture de la sortie |
+| 3 | Erreur de lecture, de scan ou d’écriture de la sortie |
 
-Le code 1 sera introduit lors du raccordement de la détection au CLI. Aucun scan
-réussi n’est possible depuis la ligne de commande à ce stade.
+La sortie humaine affiche uniquement `[REDACTED]` à la place de la valeur trouvée.
 
 ## Développement et tests
 
@@ -161,7 +181,8 @@ sans credentials réels. Les fixtures de `tests/fixtures` sont des gabarits ; le
 valeurs au format fournisseur sont construites uniquement en mémoire pendant les
 tests. Aucun compte ni service externe n’est utilisé. Ils vérifient les captures, les sévérités, les numéros de
 ligne, le masquage, la stabilité des règles, les analyses concurrentes, les limites
-de taille, les erreurs de lecture et l’annulation.
+de taille, les erreurs de lecture, l’annulation, les exclusions, les fichiers
+binaires, les placeholders, l’entropie, l’allowlist et les codes de sortie.
 
 Le détecteur de courses peut également être utilisé avec une chaîne C compatible :
 
@@ -169,6 +190,5 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront les exclusions, la réduction des faux positifs
-et les règles complémentaires, Git staged, le hook pre-commit, JSON et la configuration, puis
-la CI, les releases et la documentation complète.
+Les étapes suivantes ajouteront Git staged, le hook pre-commit, JSON et la
+configuration, puis la CI, les releases et la documentation complète.

@@ -29,5 +29,17 @@ func DefaultRules() []Rule {
 			Message: "Potential private key header detected",
 			Pattern: `-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`,
 		},
+		{
+			ID: "generic-token", Type: "Generic API key or token", Severity: SeverityMedium,
+			Message:     "Potential hardcoded API key, token or secret detected",
+			Pattern:     `(?i)\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|credentials?)\b["']?\s*(?::=|=|:)\s*["']?([^\s"'#;,}\]]{12,})`,
+			SecretGroup: 1, Generic: true, MinEntropy: 3,
+		},
+		{
+			ID: "config-password", Type: "Hardcoded password", Severity: SeverityMedium,
+			Message:     "Potential hardcoded password detected",
+			Pattern:     `(?i)\b(?:[a-z0-9]+[_-])*(?:password|passwd|pwd)\b["']?\s*(?::=|=|:)\s*((?:"[^"\r\n]{4,}")|(?:'[^'\r\n]{4,}')|(?:[^\s"'#;,}\]]{4,}))`,
+			SecretGroup: 1, Generic: true,
+		},
 	}
 }

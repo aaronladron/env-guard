@@ -1,10 +1,11 @@
 // Package scanner detects potential secrets in text streams using supplied rules.
-// It performs no filesystem traversal or network access.
+// Filesystem traversal is provided separately by ScanFS; no network is used.
 package scanner
 
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -24,6 +25,9 @@ type Rule struct {
 	Message     string
 	Pattern     string
 	SecretGroup int
+	// Generic active le filtrage contextuel des affectations non spécifiques.
+	Generic    bool
+	MinEntropy float64
 }
 
 type compiledRule struct {
@@ -60,6 +64,9 @@ func NewDetector(rules []Rule) (*Detector, error) {
 		default:
 			return invalid("unsupported severity")
 		}
+		if math.IsNaN(rule.MinEntropy) || math.IsInf(rule.MinEntropy, 0) || rule.MinEntropy < 0 || rule.MinEntropy > 8 || (!rule.Generic && rule.MinEntropy != 0) {
+			return invalid("invalid entropy threshold")
+		}
 		pattern, err := regexp.Compile(rule.Pattern)
 		if err != nil {
 			return invalid("malformed pattern")
@@ -84,6 +91,9 @@ func (d *Detector) detectLine(file string, number int, line []byte) []Finding {
 			start, end := match[2*rule.SecretGroup], match[2*rule.SecretGroup+1]
 			// Optional captures can be absent; empty captures are not secrets.
 			if start < 0 || end <= start {
+				continue
+			}
+			if rule.Generic && !d.keepGeneric(file, line[start:end], rule) {
 				continue
 			}
 			findings = append(findings, Finding{
