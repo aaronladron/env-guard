@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	gitrepo "github.com/aaronladron/env-guard/internal/git"
 	"github.com/aaronladron/env-guard/internal/scanner"
 )
 
@@ -23,18 +24,19 @@ const help = `env-guard — detect potential secrets before committing to Git
 
 Usage:
   env-guard --help
-  env-guard scan [--exclude MOTIF]
+  env-guard scan [--staged] [--exclude MOTIF]
   env-guard scan --help
 
 Commands:
   scan    Scan the current project
 `
 
-const scanHelp = `Usage: env-guard scan [--exclude MOTIF]
+const scanHelp = `Usage: env-guard scan [--staged] [--exclude MOTIF]
 
 Scan the current project for potential secrets.
 
 Options:
+  --staged          Scan only the content staged in Git
   --exclude MOTIF    Exclude a name or relative path (repeatable)
 `
 
@@ -60,7 +62,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runScan(args []string, stdout, stderr io.Writer) int {
-	excludes, ok := scanArgs(args)
+	options, ok := scanArgs(args)
 	if !ok {
 		return usage(stderr)
 	}
@@ -69,13 +71,38 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Error: unable to initialize detection rules.")
 		return ExitInternal
 	}
-	root, err := os.OpenRoot(".")
-	if err != nil {
-		fmt.Fprintln(stderr, "Error: unable to open the current directory.")
-		return ExitInternal
+	ctx := context.Background()
+	scanOptions := scanner.Options{Exclude: options.excludes}
+	var report scanner.Report
+	if options.staged {
+		repository, gitErr := gitrepo.Open(".")
+		if errors.Is(gitErr, gitrepo.ErrExecutableNotFound) {
+			fmt.Fprintln(stderr, "Error: Git executable not found")
+			return ExitInternal
+		}
+		if gitErr != nil {
+			fmt.Fprintln(stderr, "Error: unable to initialize Git scan.")
+			return ExitInternal
+		}
+		staged, gitErr := repository.Staged(ctx, scanner.MaxFileBytes)
+		if gitErr != nil {
+			fmt.Fprintln(stderr, "Error: unable to read staged Git files.")
+			return ExitInternal
+		}
+		files := make([]scanner.File, len(staged))
+		for i, file := range staged {
+			files[i] = scanner.File{Path: file.Path, Content: file.Content}
+		}
+		report, err = detector.ScanFiles(ctx, files, scanOptions)
+	} else {
+		root, openErr := os.OpenRoot(".")
+		if openErr != nil {
+			fmt.Fprintln(stderr, "Error: unable to open the current directory.")
+			return ExitInternal
+		}
+		defer root.Close()
+		report, err = detector.ScanFS(ctx, root.FS(), scanOptions)
 	}
-	defer root.Close()
-	report, err := detector.ScanFS(context.Background(), root.FS(), scanner.Options{Exclude: excludes})
 	if err != nil {
 		if errors.Is(err, scanner.ErrInvalidOptions) {
 			return usage(stderr)
@@ -107,27 +134,37 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	return ExitFindings
 }
 
-func scanArgs(args []string) ([]string, bool) {
-	var excludes []string
+type parsedScanOptions struct {
+	excludes []string
+	staged   bool
+}
+
+func scanArgs(args []string) (parsedScanOptions, bool) {
+	var options parsedScanOptions
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--staged":
+			if options.staged {
+				return parsedScanOptions{}, false
+			}
+			options.staged = true
 		case args[i] == "--exclude":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-				return nil, false
+				return parsedScanOptions{}, false
 			}
 			i++
-			excludes = append(excludes, args[i])
+			options.excludes = append(options.excludes, args[i])
 		case strings.HasPrefix(args[i], "--exclude="):
 			value := strings.TrimPrefix(args[i], "--exclude=")
 			if value == "" {
-				return nil, false
+				return parsedScanOptions{}, false
 			}
-			excludes = append(excludes, value)
+			options.excludes = append(options.excludes, value)
 		default:
-			return nil, false
+			return parsedScanOptions{}, false
 		}
 	}
-	return excludes, true
+	return options, true
 }
 
 func usage(stderr io.Writer) int {

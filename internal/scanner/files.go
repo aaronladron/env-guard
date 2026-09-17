@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -34,6 +35,13 @@ type Report struct {
 	FilesScanned   int
 	SkippedEntries int
 	Findings       []Finding
+}
+
+// File représente un fichier fourni par une source autre que le disque courant,
+// par exemple le contenu d'un index Git.
+type File struct {
+	Path    string
+	Content []byte
 }
 
 func (d *Detector) validateOptions(options Options) ([]string, error) {
@@ -71,15 +79,52 @@ func (d *Detector) validateOptions(options Options) ([]string, error) {
 
 func excluded(name string, patterns []string) bool {
 	for _, pattern := range patterns {
-		candidate := name
-		if !strings.Contains(pattern, "/") {
-			candidate = path.Base(name)
+		if strings.Contains(pattern, "/") {
+			if match, _ := path.Match(pattern, name); match {
+				return true
+			}
+			continue
 		}
-		if match, _ := path.Match(pattern, candidate); match {
-			return true
+		for _, part := range strings.Split(name, "/") {
+			if match, _ := path.Match(pattern, part); match {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// ScanFiles analyse une collection en mémoire dans l'ordre lexical des chemins.
+// Le contenu reste la propriété de l'appelant et n'est jamais modifié.
+func (d *Detector) ScanFiles(ctx context.Context, files []File, options Options) (Report, error) {
+	if d == nil || len(d.rules) == 0 {
+		return Report{}, ErrNoRules
+	}
+	patterns, err := d.validateOptions(options)
+	if err != nil {
+		return Report{}, err
+	}
+	ordered := append([]File(nil), files...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	report := Report{Findings: make([]Finding, 0)}
+	seen := make(map[string]bool, len(ordered))
+	for _, file := range ordered {
+		if err := ctx.Err(); err != nil {
+			return Report{}, err
+		}
+		if !fs.ValidPath(file.Path) || file.Path == "." || seen[file.Path] {
+			return Report{}, ErrRead
+		}
+		seen[file.Path] = true
+		if excluded(file.Path, patterns) {
+			report.SkippedEntries++
+			continue
+		}
+		if err := d.scanContent(ctx, &report, file.Path, file.Content, options.Allowlist); err != nil {
+			return Report{}, err
+		}
+	}
+	return report, nil
 }
 
 func allowed(f Finding, entries []AllowEntry) bool {
@@ -130,28 +175,7 @@ func (d *Detector) ScanFS(ctx context.Context, tree fs.FS, options Options) (Rep
 		if err != nil {
 			return fmt.Errorf("%q: %w", name, err)
 		}
-		if binaryControl(data) {
-			report.SkippedEntries++
-			return nil
-		}
-		if len(data) > MaxFileBytes {
-			return fmt.Errorf("%q: %w", name, ErrFileTooLarge)
-		}
-		if !utf8.Valid(data) {
-			report.SkippedEntries++
-			return nil
-		}
-		findings, err := d.Scan(ctx, name, bytes.NewReader(data))
-		if err != nil {
-			return fmt.Errorf("%q: %w", name, err)
-		}
-		report.FilesScanned++
-		for _, finding := range findings {
-			if !allowed(finding, options.Allowlist) {
-				report.Findings = append(report.Findings, finding)
-			}
-		}
-		return nil
+		return d.scanContent(ctx, &report, name, data, options.Allowlist)
 	})
 	if err != nil {
 		return Report{}, err
@@ -160,6 +184,27 @@ func (d *Detector) ScanFS(ctx context.Context, tree fs.FS, options Options) (Rep
 		return Report{}, err
 	}
 	return report, nil
+}
+
+func (d *Detector) scanContent(ctx context.Context, report *Report, name string, data []byte, allowlist []AllowEntry) error {
+	if binaryControl(data) || !utf8.Valid(data) {
+		report.SkippedEntries++
+		return nil
+	}
+	if len(data) > MaxFileBytes {
+		return fmt.Errorf("%q: %w", name, ErrFileTooLarge)
+	}
+	findings, err := d.Scan(ctx, name, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("%q: %w", name, err)
+	}
+	report.FilesScanned++
+	for _, finding := range findings {
+		if !allowed(finding, allowlist) {
+			report.Findings = append(report.Findings, finding)
+		}
+	}
+	return nil
 }
 
 func binaryControl(data []byte) bool {

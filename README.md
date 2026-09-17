@@ -3,9 +3,9 @@
 Un outil CLI écrit en Go pour détecter les secrets potentiellement exposés dans
 un projet avant leur commit dans Git.
 
-**État du développement : étape 4.** La commande `scan` parcourt le dossier
-courant, applique les règles disponibles et retourne un code adapté au résultat.
-L’analyse Git staged, le hook, la configuration et le format JSON restent à venir.
+**État du développement : étape 5.** La commande `scan` parcourt le dossier
+courant ou uniquement le contenu staged dans Git. Le hook, la configuration et
+le format JSON restent à venir.
 
 ## Compiler et exécuter
 
@@ -27,14 +27,25 @@ env-guard scan --exclude generated --exclude 'fixtures/*.txt'
 ```
 
 L’option peut être répétée et accepte aussi la forme `--exclude=generated`.
-Les commandes, options et arguments non pris en charge sont rejetés, notamment
-`--staged` à ce stade.
+Les commandes, options et arguments non pris en charge sont rejetés.
+`--exclude` peut être combiné avec `--staged`.
+
+Analyser uniquement ce qui sera inclus dans le prochain commit :
+
+```sh
+env-guard scan --staged
+```
+
+Ce mode lit les blobs présents dans l’index Git. Une modification non staged du
+même fichier ne change donc pas le résultat. Les fichiers non suivis et les
+suppressions staged ne sont pas analysés.
 
 ## Architecture
 
 ```text
 cmd/env-guard/main.go           Point d’entrée et code de sortie du processus
 internal/cli/                  Arguments, aide et sorties du CLI
+internal/git/                  Lecture sûre des fichiers présents dans l’index
 internal/scanner/
   scanner.go                   Lecture bornée du flux et annulation
   files.go                     Parcours, exclusions et fichiers binaires
@@ -56,6 +67,12 @@ séparé de la lecture, du parcours et de la détection.
 `ScanFS` travaille avec un `fs.FS`, ce qui garde le parcours testable et portable.
 Le CLI ouvre le dossier courant avec `os.OpenRoot` et ne suit pas les liens
 symboliques rencontrés pendant le parcours.
+
+Le mode staged appelle l’exécutable Git local avec des arguments séparés, puis
+résout les objets de l’index par leur identifiant. Les noms sont lus avec un
+séparateur nul : les espaces, tabulations et sauts de ligne dans un chemin ne
+modifient pas le découpage. Les messages d’erreur de Git ne sont pas recopiés
+dans la sortie afin d’éviter d’y propager du contenu sensible.
 
 ## Moteur de détection
 
@@ -108,6 +125,10 @@ indépendants.
 - Les liens symboliques et les autres entrées non régulières sont ignorés.
 - Une erreur de lecture invalide le rapport complet ; aucun résultat partiel
   n’est présenté comme un scan réussi.
+- Le mode staged prend les fichiers ajoutés, copiés, modifiés ou renommés. Les
+  suppressions, liens symboliques et sous-modules sont ignorés.
+- Git doit être installé et le dossier courant doit appartenir à un dépôt Git.
+  Un blob staged dépassant 10 Mio fait échouer le scan avant son chargement.
 
 ## Premières règles
 
@@ -190,5 +211,5 @@ Le détecteur de courses peut également être utilisé avec une chaîne C compa
 go test -race ./...
 ```
 
-Les étapes suivantes ajouteront Git staged, le hook pre-commit, JSON et la
-configuration, puis la CI, les releases et la documentation complète.
+Les étapes suivantes ajouteront le hook pre-commit, JSON et la configuration,
+puis la CI, les releases et la documentation complète.
